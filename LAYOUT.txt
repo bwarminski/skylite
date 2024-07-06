@@ -1,0 +1,112 @@
+etcd
+-----
+
+n/[databasename] -> fixed length prefix
+[prefix]/m -> metadata
+[prefix]/t -> last write counter
+[prefix]/p/[usize] -> page pointers [hash][(optional) base][(optional) compressed delta]
+[prefix]/c/[hash] -> compressed page
+[prefix]/l/[level]/[start][end][revision based filename] -> [sorted index]] (sorted index is a list of [hash][offset][length] tuples)
+[prfix]/x/[counter] -> page changelog
+
+file
+----
+
+[[count hashes][ordered hashes + offset (offset greater than max size == tombstone)][contents]
+
+Initial Algorithms
+----------
+
+Get revision:
+    Read [prefix]/t
+    Return revision
+
+Read at revision:
+    Read [prefix]/p/[usize] at revision - if base present and cached, decompress delta and xor with base, else ...
+    Read [prefix]/c/[hash] - if present, decompress and return
+    Read [prefix]/l/
+        For each level, find overlapping ranges, check index, if present read and return from file
+
+Read batched:
+    Read [prefix]/p/[start-end] - for desired pages, if base present and cached, decompress delta xor with base, for rest
+    For remainder:
+        Read [prefix]/c/[hash] - if present, decompress and return
+    For remainder:
+        Read [prefix]/l/
+            For each level, find overlapping ranges, check index, if present read and return from file
+    Cache
+
+Write batch:
+    For each Write [prefix]/c/[hash] - compress and write
+    Cache
+
+Commit at revision, with pages to write, with read revision:
+    Propose counter - if large transaction, t+1, else t+random(10)
+    For each page to write:
+        Read [prefix]/p/[usize] at read revision - if base present and cached, xor and compress delta
+        Write [prefix]/c/[hash] - compress and write
+    Check and set:
+        All current [prefix]/p/[usize] read at or before read revision If < 2000 read, else lwv at read revision, [prefix]/t < proposed_counter
+        [prefix]/p/[usize] -> [hash] with compressed xor
+        [prefix]/t -> proposed_counter
+        [prefix]/x/[counter] -> [offsets written] (we're not using counter anymore, timebased uuid)
+
+    Cache written pages
+
+Compaction:
+    Read [prefix]/c/ if larger than 160MB in pages (2500)
+    Scan into object store
+    Add file to [prefix]/l/0
+    Delete all c in file
+    Count [prefix]/l/0, if 4 or greater
+        Watch [prefix]/p since earliest available revision, collect hashes and base pages into set
+        Read [prefix]/l/1, merge into runs - filter if older than 1 hour and not in set, write to object store
+        Replace [prefix]l/1 with new run
+        Delete [prefix]/l/0
+        If run > 10, merge excess to next level (if l 1, choose random, otherwise choose oldest) - loop
+
+    Read [prefix]/p/ and [prefix]/l/ at revision - write to index file
+
+
+
+BoltDB Notes
+----------
+
+Two stores:
+    1. Page store
+    2. Metadata store
+
+Metadata store:
+    Key: [usize]
+    Value: [data | hash]
+    Sequence: Last Written Version
+
+Page store:
+    Key: [hash]
+    Value: [written][compressed data] -- As part of compaction, can reduce
+
+Startup:
+    Read hashes into metadata store
+    Start metadata worker
+    Start fetch worker
+    Start compaction / garbage collector
+    Enqueue read hashes with page pointers
+
+Metadata worker:
+    Watch for changes
+    Update the metadata store in transactions, check that received revision is higher than last written version
+
+Read your writes:
+    Last operation in etcd commit should check for updates
+    Perform a range read of the metadata store for all keys greater than the last written version
+    If impossible to read or update, set required version marker
+
+Fetch worker:
+    Watch for changes
+    Update cache with new wal keys
+    When new file appears, fetch metadata and bloom filter
+    Split file range into ~16 MB blocks and associate with ranges along boundaries (need to include the key and rev to ensure later)
+
+Content Gets:
+    Check wal key cache, return if present
+
