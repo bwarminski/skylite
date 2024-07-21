@@ -3,8 +3,6 @@ package storage
 import (
 	"bytes"
 	"context"
-	"github.com/aws/aws-sdk-go/service/s3"
-	lru "github.com/hashicorp/golang-lru/v2"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"io"
 	"lukechampine.com/blake3"
@@ -44,12 +42,10 @@ func (cp cachedPage) Page() models.Page {
 
 type contentStorage struct {
 	Client *clientv3.Client
-	S3     *s3.S3
 	KV     clientv3.KV
-	cache  *lru.Cache[pageCacheKey, cachedPage]
 }
 
-func NewContentStorage(client *clientv3.Client, s3 *s3.S3, cacheSize int) ContentStorage {
+func NewContentStorage(client *clientv3.Client, cacheSize int) ContentStorage {
 	cache, err := lru.New[pageCacheKey, cachedPage](cacheSize)
 	if err != nil {
 		panic(err)
