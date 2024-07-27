@@ -1,0 +1,23 @@
+namespace internal.schema.page;
+
+table Ref {
+    hash: [ubyte] (required);
+    base: [ubyte];
+    delta: [ubyte];
+}
+
+table Real {
+    data: [ubyte] (required);
+}
+
+union Data {
+    Ref,
+    Real
+}
+
+table Page {
+    revision: int64;
+    data: Data (required);
+}
+
+root_type Page;

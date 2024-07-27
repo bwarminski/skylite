@@ -1,43 +1,70 @@
 package main
 
 import (
-	"github.com/rs/zerolog"
-	clientv3 "go.etcd.io/etcd/client/v3"
-	"net/http"
+	"fmt"
+	"log"
 	"os"
-	"s3qlite/internal/models"
-	"s3qlite/internal/server"
-	"s3qlite/internal/services"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 func main() {
-	output := zerolog.ConsoleWriter{Out: os.Stderr}
-	log := zerolog.New(output).With().Timestamp().Logger()
+	// Define the path for the test database
+	dbPath := "test.db"
 
-	etcd, err := clientv3.New(clientv3.Config{
-		Endpoints: []string{"http://localhost:2379"},
-	})
+	// Ensure the database file does not already exist
+	os.Remove(dbPath)
+
+	// Open the BoltDB database
+	db, err := bolt.Open(dbPath, 0600, nil)
 	if err != nil {
-		log.Fatal().Err(err).Msg("error connecting to etcd")
+		log.Fatalf("Failed to open BoltDB: %v", err)
 	}
-	defer func(etcd *clientv3.Client) {
-		err := etcd.Close()
+	defer db.Close()
+
+	// Create a bucket and write data
+	err = db.Update(func(tx *bolt.Tx) error {
+		bucket, err := tx.CreateBucketIfNotExists([]byte("TestBucket"))
 		if err != nil {
-			log.Error().Err(err).Msg("error closing etcd client")
+			return fmt.Errorf("create bucket: %s", err)
 		}
-	}(etcd)
 
-	deps := models.CommonDependencies{
-		KV:     etcd.KV,
-		Logger: log,
+		// Write a key-value pair
+		err = bucket.Put([]byte("key"), []byte("value"))
+		if err != nil {
+			return fmt.Errorf("put key-value pair: %s", err)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		log.Fatalf("Transaction failed: %v", err)
 	}
 
-	s := server.New(&server.Dependencies{
-		CommonDependencies: &deps,
-		StatService:        services.NewStatService(&deps, false),
+	// Read the value back
+	err = db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("TestBucket"))
+		if bucket == nil {
+			return fmt.Errorf("bucket not found")
+		}
+
+		value := bucket.Get([]byte("key"))
+		if value == nil {
+			return fmt.Errorf("value not found")
+		}
+
+		fmt.Printf("Read value: %s\n", value)
+		return nil
 	})
-	err = http.ListenAndServe(":8080", s)
+
 	if err != nil {
-		log.Fatal().Err(err).Msg("error starting server")
+		log.Fatalf("Read transaction failed: %v", err)
+	}
+
+	// Cleanup: remove the test database file
+	err = os.Remove(dbPath)
+	if err != nil {
+		log.Fatalf("Failed to remove test database file: %v", err)
 	}
 }
